@@ -481,7 +481,7 @@ class BentoAPIServer:
 
         # Creating the subscription to precipitation
         r = requests.post(URL_SUBSCRIPTION, json=json_, headers=headers)
-        logger.info('requests status_code for POST Subscription to Precipitation: %s', r.status_code)
+        logger.info('request status_code for POST Subscription: %s', r.status_code)
 
         # Finally, respond to the initial received request (notification)
         # with empty 200        
@@ -507,18 +507,18 @@ class BentoAPIServer:
             "notifiedAt": "2021-05-04T06:45:32.83178Z",
             "data": [
                 {
-                "id": "urn:ngsi-ld:River:014f5730-72ab-4554-a106-afbe5d4d9d26",
-                "type": "River",
-                "precipitation": {
-                    "type": "Property",
-                    "createdAt": "2021-05-04T06:45:32.674520Z",
-                    "value": 2.2,
-                    "observedAt": "2021-05-04T06:35:22.000Z",
-                    "unitCode": "MMT"
-                },
-                "@context": [
-                    "https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-precipitation-compound.jsonld"
-                ]
+                    "id": "urn:ngsi-ld:River:014f5730-72ab-4554-a106-afbe5d4d9d26",
+                    "type": "River",
+                    "precipitation": {
+                        "type": "Property",
+                        "createdAt": "2021-05-04T06:45:32.674520Z",
+                        "value": 2.2,
+                        "observedAt": "2021-05-04T06:35:22.000Z",
+                        "unitCode": "MMT"
+                    },
+                    "@context": [
+                        "https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-precipitation-compound.jsonld"
+                    ]
                 }
             ]
         }
@@ -567,9 +567,7 @@ class BentoAPIServer:
         logger.info('raw (get_json()) prediction received from /predict: %s', prediction)
 
         # Create NGSI-LD request to update Entity/Property
-        # Here updating 'flow' Property of the Siagne Entity
         prediction = round(float(np.array(prediction).squeeze()), 2)
-        # timezone_France = pytz.timezone('Europe/Paris')
         timezone_GMT = pytz.timezone('GMT')
         predictedAt = timezone_GMT.localize(datetime.now().replace(microsecond=0)).isoformat()
         logger.info('predictedAt UTC: %s', predictedAt)
