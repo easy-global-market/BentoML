@@ -188,6 +188,8 @@ class BentoAPIServer:
         self.ngsild_at_context = config('ngsild').get('at_context')
         self.ngsild_access_token = config('ngsild').get('access_token')
         self.ngsild_ml_model_id = config('ngsild').get('ml_model_id')
+        self.ngsild_ml_model_input = config('ngsild').get('ml_model_input')
+        self.ngsild_ml_model_output = config('ngsild').get('ml_model_output')
 
         self.swagger_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), 'static_content'
@@ -441,8 +443,7 @@ class BentoAPIServer:
         }
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
         URL_SUBSCRIPTION = self.ngsild_cb_url + '/ngsi-ld/v1/subscriptions/'
-        SUBSCRIPTION_INPUT_DATA = 'urn:ngsi-ld:Subscription:input:data:2c30fa86-a25c-4191-8311-8954294e92b3'
-        # SUBSCRIPTION_INPUT_DATA = "urn:ngsi-ld:Subscription:input:data:{}".format(str(uuid.uuid4()))
+        SUBSCRIPTION_INPUT_DATA = 'urn:ngsi-ld:Subscription:input:data:'+str(uuid.uuid4())
         AT_CONTEXT = [ self.ngsild_at_context ]
 
         # Get the POST data
@@ -454,33 +455,33 @@ class BentoAPIServer:
         logger.info('requests status_code for GET subscriptionQuery: %s', r.status_code)
         logger.info('Data: %s', r.json())
         ENTITY_INPUT_DATA = r.json()['entityID']['value']
+        ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
 
-        # We use the content of the SubscriptionQuery only to get the entity ID for now. 
-        # Need to find a generic way to get the attributes as well.
-        # Hard coding attributes (precipitation) here.
+        # We use the content of the SubscriptionQuery only to get the entity ID. 
+        # The attribute(s) is/are part of the the MLModel definition.
+        # Only one attribute (precipitation) here.
         json_ = {
             '@context': AT_CONTEXT,
             'id': SUBSCRIPTION_INPUT_DATA,
             'type': 'Subscription',
             'entities': [
                 {
-                    'id': ENTITY_INPUT_DATA,
-                    'type': 'River'
+                    'id': ENTITY_INPUT_DATA
                 }
             ],
-            'watchedAttributes': ['precipitation'],
+            'watchedAttributes': [ATTRIBUTE_INPUT_DATA],
             'notification': {
                 'endpoint': {
                     'uri': request.url_root + '/ngsi-ld/ml/predict',
                     'accept': 'application/json'
                 },
-                'attributes': ['precipitation']
+                'attributes': [ATTRIBUTE_INPUT_DATA]
             }
         }
 
         # Creating the subscription to precipitation
         r = requests.post(URL_SUBSCRIPTION, json=json_, headers=headers)
-        logger.info('requests status_code for POST Subscription to Precipitation: %s', r.status_code)
+        logger.info('request status_code for POST Subscription: %s', r.status_code)
 
         # Finally, respond to the initial received request (notification)
         # with empty 200        
@@ -506,18 +507,18 @@ class BentoAPIServer:
             "notifiedAt": "2021-05-04T06:45:32.83178Z",
             "data": [
                 {
-                "id": "urn:ngsi-ld:River:014f5730-72ab-4554-a106-afbe5d4d9d26",
-                "type": "River",
-                "precipitation": {
-                    "type": "Property",
-                    "createdAt": "2021-05-04T06:45:32.674520Z",
-                    "value": 2.2,
-                    "observedAt": "2021-05-04T06:35:22.000Z",
-                    "unitCode": "MMT"
-                },
-                "@context": [
-                    "https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-precipitation-compound.jsonld"
-                ]
+                    "id": "urn:ngsi-ld:River:014f5730-72ab-4554-a106-afbe5d4d9d26",
+                    "type": "River",
+                    "precipitation": {
+                        "type": "Property",
+                        "createdAt": "2021-05-04T06:45:32.674520Z",
+                        "value": 2.2,
+                        "observedAt": "2021-05-04T06:35:22.000Z",
+                        "unitCode": "MMT"
+                    },
+                    "@context": [
+                        "https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-precipitation-compound.jsonld"
+                    ]
                 }
             ]
         }
@@ -540,12 +541,14 @@ class BentoAPIServer:
         MLMODEL_UUID = self.ngsild_ml_model_id
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
         AT_CONTEXT = [ self.ngsild_at_context ]
+        ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
+        ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output
 
         # Get the POST data
         input_data_notification = request.get_json()
 
         input_entity = input_data_notification['data'][0]['id']
-        input_data = input_data_notification['data'][0]['precipitation']['value']
+        input_data = input_data_notification['data'][0][ATTRIBUTE_INPUT_DATA]['value']
         logger.info('input_data received from notification: %s', input_data)
 
         # reshaping input data into a 2D array
@@ -560,35 +563,27 @@ class BentoAPIServer:
         predict_req = Request.from_values(data=str(input_data))
         predict_res = predict_api.handle_request(predict_req)
 
-        flow_prediction = predict_res.get_json()
-        logger.info('raw (get_json()) prediction received from /predict: %s', flow_prediction)
+        prediction = predict_res.get_json()
+        logger.info('raw (get_json()) prediction received from /predict: %s', prediction)
 
         # Create NGSI-LD request to update Entity/Property
-        # Here updating 'flow' Property of the Siagne Entity
-        flow_prediction = round(float(np.array(flow_prediction).squeeze()), 2)
-        # timezone_France = pytz.timezone('Europe/Paris')
+        prediction = round(float(np.array(prediction).squeeze()), 2)
         timezone_GMT = pytz.timezone('GMT')
         predictedAt = timezone_GMT.localize(datetime.now().replace(microsecond=0)).isoformat()
         logger.info('predictedAt UTC: %s', predictedAt)
 
         json_ = {
             '@context': AT_CONTEXT,
-            'flow': [
-                {
-                    'type': 'Property',
-                    'value': flow_prediction,
-                    'unitCode': 'MQS',
-                    'observedAt': predictedAt,
-                    'computedBy': {
-                        'type': 'Relationship',
-                        'object': MLMODEL_UUID
-                    }
-                }
-            ]
+            'value': prediction,
+            'observedAt': predictedAt,
+            'computedBy': {
+                'type': 'Relationship',
+                'object': MLMODEL_UUID
+            }
         }
 
-        URL_PATCH_FLOW = URL_ENTITIES + input_entity + '/attrs'
-        r = requests.post(URL_PATCH_FLOW, json=json_, headers=headers)
+        URL_PATCH_PREDICTION = URL_ENTITIES + input_entity + '/attrs/' + ATTRIBUTE_OUTPUT_DATA
+        r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
         logger.info('requests status_code for (PATCH) Entity with prediction: %s', r.status_code)
 
         # Finally, respond to the initial received request (notification)
