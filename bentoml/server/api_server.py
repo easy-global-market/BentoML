@@ -441,7 +441,6 @@ class BentoAPIServer:
         }
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
         URL_SUBSCRIPTION = self.ngsild_cb_url + '/ngsi-ld/v1/subscriptions/'
-        # SUBSCRIPTION_INPUT_DATA = 'urn:ngsi-ld:Subscription:input:data:2c30fa86-a25c-4191-8311-8954294e92b3'
         SUBSCRIPTION_INPUT_DATA = 'urn:ngsi-ld:Subscription:input:data:'+str(uuid.uuid4())
         AT_CONTEXT = [ self.ngsild_at_context ]
 
@@ -465,8 +464,7 @@ class BentoAPIServer:
             'type': 'Subscription',
             'entities': [
                 {
-                    'id': ENTITY_INPUT_DATA,
-                    'type': 'River'
+                    'id': ENTITY_INPUT_DATA
                 }
             ],
             'watchedAttributes': [ATTRIBUTE_INPUT_DATA],
