@@ -188,6 +188,7 @@ class BentoAPIServer:
         self.ngsild_at_context = config('ngsild').get('at_context')
         self.ngsild_access_token = config('ngsild').get('access_token')
         self.ngsild_ml_model_id = config('ngsild').get('ml_model_id')
+        self.ngsild_ml_model_input = config('ngsild').get('ml_model_input')
 
         self.swagger_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), 'static_content'
@@ -453,11 +454,11 @@ class BentoAPIServer:
         logger.info('requests status_code for GET subscriptionQuery: %s', r.status_code)
         logger.info('Data: %s', r.json())
         ENTITY_INPUT_DATA = r.json()['entityID']['value']
-        ATTRIBUTE_INPUT_DATA = r.json()['query']['value'].split('=')[1]
+        ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
 
-        # We use the content of the SubscriptionQuery only to get the entity ID for now. 
-        # Need to find a generic way to get the attributes as well.
-        # Hard coding attributes (precipitation) here.
+        # We use the content of the SubscriptionQuery only to get the entity ID. 
+        # The attribute(s) is/are part of the the MLModel definition.
+        # Only one attribute (precipitation) here.
         json_ = {
             '@context': AT_CONTEXT,
             'id': SUBSCRIPTION_INPUT_DATA,
@@ -473,7 +474,7 @@ class BentoAPIServer:
                     'uri': request.url_root + '/ngsi-ld/ml/predict',
                     'accept': 'application/json'
                 },
-                'attributes': ['precipitation']
+                'attributes': [ATTRIBUTE_INPUT_DATA]
             }
         }
 
@@ -539,12 +540,13 @@ class BentoAPIServer:
         MLMODEL_UUID = self.ngsild_ml_model_id
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
         AT_CONTEXT = [ self.ngsild_at_context ]
+        ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
 
         # Get the POST data
         input_data_notification = request.get_json()
 
         input_entity = input_data_notification['data'][0]['id']
-        input_data = input_data_notification['data'][0]['precipitation']['value']
+        input_data = input_data_notification['data'][0][ATTRIBUTE_INPUT_DATA]['value']
         logger.info('input_data received from notification: %s', input_data)
 
         # reshaping input data into a 2D array
