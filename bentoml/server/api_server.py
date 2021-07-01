@@ -189,6 +189,7 @@ class BentoAPIServer:
         self.ngsild_access_token = config('ngsild').get('access_token')
         self.ngsild_ml_model_id = config('ngsild').get('ml_model_id')
         self.ngsild_ml_model_input = config('ngsild').get('ml_model_input')
+        self.ngsild_ml_model_output = config('ngsild').get('ml_model_output')
 
         self.swagger_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), 'static_content'
