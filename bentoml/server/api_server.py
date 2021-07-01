@@ -541,6 +541,7 @@ class BentoAPIServer:
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
         AT_CONTEXT = [ self.ngsild_at_context ]
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
+        ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output
 
         # Get the POST data
         input_data_notification = request.get_json()
@@ -561,12 +562,12 @@ class BentoAPIServer:
         predict_req = Request.from_values(data=str(input_data))
         predict_res = predict_api.handle_request(predict_req)
 
-        flow_prediction = predict_res.get_json()
-        logger.info('raw (get_json()) prediction received from /predict: %s', flow_prediction)
+        prediction = predict_res.get_json()
+        logger.info('raw (get_json()) prediction received from /predict: %s', prediction)
 
         # Create NGSI-LD request to update Entity/Property
         # Here updating 'flow' Property of the Siagne Entity
-        flow_prediction = round(float(np.array(flow_prediction).squeeze()), 2)
+        prediction = round(float(np.array(prediction).squeeze()), 2)
         # timezone_France = pytz.timezone('Europe/Paris')
         timezone_GMT = pytz.timezone('GMT')
         predictedAt = timezone_GMT.localize(datetime.now().replace(microsecond=0)).isoformat()
@@ -574,22 +575,16 @@ class BentoAPIServer:
 
         json_ = {
             '@context': AT_CONTEXT,
-            'flow': [
-                {
-                    'type': 'Property',
-                    'value': flow_prediction,
-                    'unitCode': 'MQS',
-                    'observedAt': predictedAt,
-                    'computedBy': {
-                        'type': 'Relationship',
-                        'object': MLMODEL_UUID
-                    }
-                }
-            ]
+            'value': prediction,
+            'observedAt': predictedAt,
+            'computedBy': {
+                'type': 'Relationship',
+                'object': MLMODEL_UUID
+            }
         }
 
-        URL_PATCH_FLOW = URL_ENTITIES + input_entity + '/attrs'
-        r = requests.post(URL_PATCH_FLOW, json=json_, headers=headers)
+        URL_PATCH_PREDICTION = URL_ENTITIES + input_entity + '/attrs/' + ATTRIBUTE_OUTPUT_DATA
+        r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
         logger.info('requests status_code for (PATCH) Entity with prediction: %s', r.status_code)
 
         # Finally, respond to the initial received request (notification)
