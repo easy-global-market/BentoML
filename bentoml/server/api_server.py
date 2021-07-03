@@ -455,6 +455,9 @@ class BentoAPIServer:
         logger.info('requests status_code for GET subscriptionQuery: %s', r.status_code)
         logger.info('Data: %s', r.json())
         ENTITY_INPUT_DATA = r.json()['entityID']['value']
+        # Currently guessing the type from the entity id
+        # Later improve by adding the type in the SubscriptionQuery entity
+        ENTITY_TYPE = ENTITY_INPUT_DATA.split(":")[2]
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
 
         # We use the content of the SubscriptionQuery only to get the entity ID. 
@@ -466,7 +469,8 @@ class BentoAPIServer:
             'type': 'Subscription',
             'entities': [
                 {
-                    'id': ENTITY_INPUT_DATA
+                    'id': ENTITY_INPUT_DATA,
+                    'type': ENTITY_TYPE
                 }
             ],
             'watchedAttributes': [ATTRIBUTE_INPUT_DATA],
