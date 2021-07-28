@@ -397,13 +397,12 @@ class BentoAPIServer:
 
     def handle_ml_processing(self):
         """
-        Handle receipt of a notification from subscription to
-        MLProcessing entities. It indicates a new entity is interested
-        in using this MLModel.
+        Handle receipt of a notification from subscription to MLProcessing entities.
+        It indicates a new user is interested in using this MLModel.
 
         On receipt of this notification, the information on where to
         find the input data for prediction is retrieved, and a subscription
-        is created to be notified when input data changes.
+        is created to be notified when this input data changes.
 
         The notification received looks like:
 
@@ -416,11 +415,12 @@ class BentoAPIServer:
                 {
                     'id': 'urn:ngsi-ld:MLProcessing:4bbb2b09-ad6c-4fb9-8f40-8d37e4cddd3a',
                     'type': 'MLProcessing',
-                    'refSubscriptionQuery':
+                    'entities': [
                         {
-                            'type': 'Relationship',
-                            'object': 'urn:ngsi-ld:MLProcessing:SubscriptionQuery:e7be459e-dcee-46ab-90da-fba3120db4ff'
-                        },
+                            "id": "urn:ngsi-ld:River:014f5730-72ab-4554-a106-afbe5d4d9d26",
+                            "type": "River"
+                        }
+                    ],
                     '@context': [
                         'https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-compound.jsonl'
                     ]
@@ -429,11 +429,10 @@ class BentoAPIServer:
         }
 
         We need to:
-        * GET the SubscriptionQuery entity referenced by 'refSubscriptionQuery',
-        * extract from the SubscriptionQuery entity, where to get the input data,
-        * Finally create a subscription to this data. 
+        * extract from the MLProcessing entity, where to get the input data (id and type of the entity for now)
+        * create a subscription to this data. 
         """
-        logger.info("-- Entering handle_ml_processing ...")
+        logger.info("Received a notification for a MLProcessing entity")
 
         # Some generic configuration
         access_token = self.ngsild_access_token
@@ -441,7 +440,6 @@ class BentoAPIServer:
             'Authorization': 'Bearer ' + access_token,
             'Content-Type': 'application/ld+json'
         }
-        URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
         URL_SUBSCRIPTION = self.ngsild_cb_url + '/ngsi-ld/v1/subscriptions/'
         SUBSCRIPTION_INPUT_DATA = 'urn:ngsi-ld:Subscription:input:data:'+str(uuid.uuid4())
         AT_CONTEXT = [ self.ngsild_at_context ]
@@ -449,28 +447,25 @@ class BentoAPIServer:
         # Get the POST data
         mlprocessing_notification = request.get_json()
 
-        # Getting the SubscriptionQuery entity
-        refSubscriptionQuery = mlprocessing_notification['data'][0]['refSubscriptionQuery']['object']
-        r = requests.get(URL_ENTITIES+refSubscriptionQuery, headers=headers)
-        logger.info('requests status_code for GET subscriptionQuery: %s', r.status_code)
-        logger.info('Data: %s', r.json())
-        ENTITY_INPUT_DATA = r.json()['entityID']['value']
-        # Currently guessing the type from the entity id
-        # Later improve by adding the type in the SubscriptionQuery entity
-        ENTITY_TYPE = ENTITY_INPUT_DATA.split(":")[2]
+        # Get the MLProcessing entity and extract the entities information (to be extended later)
+        mlprocessing_entity = mlprocessing_notification['data'][0]
+        logger.info("Got following MLProcessing entity: %s", mlprocessing_entity)
+
+        input_entity_id = mlprocessing_entity['entities'][0]['id']
+        input_entity_type = mlprocessing_entity['entities'][0]['type']
+
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
 
-        # We use the content of the SubscriptionQuery only to get the entity ID. 
-        # The attribute(s) is/are part of the the MLModel definition.
-        # Only one attribute (precipitation) here.
+        # We use the content of the MLProcessing only to get the entity id and type. 
+        # The input attribute(s) is(are) part of the the MLModel definition.
         json_ = {
             '@context': AT_CONTEXT,
             'id': SUBSCRIPTION_INPUT_DATA,
             'type': 'Subscription',
             'entities': [
                 {
-                    'id': ENTITY_INPUT_DATA,
-                    'type': ENTITY_TYPE
+                    'id': input_entity_id,
+                    'type': input_entity_type
                 }
             ],
             'watchedAttributes': [ATTRIBUTE_INPUT_DATA],
@@ -483,17 +478,16 @@ class BentoAPIServer:
             }
         }
 
-        # Creating the subscription to precipitation
+        # Create the subscription
         r = requests.post(URL_SUBSCRIPTION, json=json_, headers=headers)
-        logger.info('request status_code for POST Subscription: %s', r.status_code)
+        logger.info('Response status code from creation of the subscription: %s', r.status_code)
 
-        # Finally, respond to the initial received request (notification)
-        # with empty 200        
+        # Finally, respond to the initial received request (notification) with a 200        
         response = make_response(
             '',
             200,
         )
-        logger.info("-- Bye by from handle_ml_processing ...")
+        logger.info("Returning from MLProcessing handling")
         return response
 
     def handle_ml_predict(self):
