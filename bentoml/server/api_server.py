@@ -139,7 +139,6 @@ def _request_to_json(req):
     return {}
 
 
-
 def log_exception(exc_info):
     """
     Logs an exception.  This is called by :meth:`handle_exception`
@@ -496,7 +495,7 @@ class BentoAPIServer:
         # Create the subscription
         r = requests.post(URL_SUBSCRIPTION, json=json_, headers=headers)
         logger.info('request status_code for creation of the Subscription: %s', r.status_code)
-        if r.status_code not in [200, 201]:
+        if r.status_code != 201:
             logger.info('Error: %s', r.json())
 
         # Finally, respond to the initial received request (notification) with a 200        
