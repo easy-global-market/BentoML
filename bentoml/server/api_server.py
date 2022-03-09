@@ -139,45 +139,6 @@ def _request_to_json(req):
     return {}
 
 
-def hydro_model_init(entity_id, property_name,
-                     aggregation_type, start_date,
-                     URL_TEMPORAL_ENTITIES, headers):
-    """
-    Provide data for initialisation of the hydrological model. Data are retrievded
-    from different sources stored into a Context Broker. The data are:
-    - Flow
-    - Precipitation
-    - Temperature
-    Flow is retrieved from an entity of type River.
-    Precipitation, Temperature are retrieved from an entity of type WeatherObserved
-    """
-    if property_name.startswith('https://'):
-        property_name_urlencoded = quote_plus(property_name)
-    else:
-        property_name_urlencoded = property_name
-
-    query = '?attrs=' + property_name_urlencoded +\
-            '&timerel=after&time=' +\
-            start_date +\
-            '&timeBucket=30 day&aggregate=' +\
-            aggregation_type
-
-    r = requests.get(URL_TEMPORAL_ENTITIES+entity_id+query, headers=headers)
-    if property_name == 'flow':
-        # several datasetId, we need to pickup the one
-        # from Pegomas (urn:ngsi-ld:Dataset:flow:MQS:Y553403001)
-        flows = r.json()['flow']
-        for flow in flows:
-            if flow['datasetId'] == 'urn:ngsi-ld:Dataset:flow:MQS:Y553403001':
-                values = [round(item[0], 2) for item in flow['values']]
-                dates = [item[1][:10] for item in flow['values']]
-    else:
-        property_values = r.json()[property_name][0]['values']
-        values = [round(item[0], 2) for item in property_values]
-        dates = None
-        
-    return(values, dates)
-
 
 def log_exception(exc_info):
     """
@@ -625,22 +586,6 @@ class BentoAPIServer:
         # Get the data 6 months in the past
         _180DaysBefore = datetime.now(timezone.utc) - timedelta(days=179)
         _180DaysBeforeStr = _180DaysBefore.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        # Get flow data
-        flow, dates = hydro_model_init(RIVER_SIAGNE_ID, FLOW,
-                                         'AVG', _180DaysBeforeStr, headers)
-        logger.info("flow values %s", flow)
-        
-        # Get precipitation data
-        precipitation, _ = hydro_model_init(WEATHER_UUID, PRECIPITATION,
-                                         'SUM', _180DaysBeforeStr, headers)
-        logger.info("precipitation values %s", precipitation)
-
-        # Get temperature data
-        temperature, _ = hydro_model_init(WEATHER_UUID, TEMPERATURE,
-                                         'AVG', _180DaysBeforeStr, headers)
-        logger.info("temperature values %s", temperature)
-
 
         # To predict next three months of precipitation/temperature
         # We get the current date - 90 days, then perform get temporal
