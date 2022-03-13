@@ -37,7 +37,6 @@ import requests
 from datetime import datetime, timezone, timedelta
 import pytz
 import numpy as np
-import csv
 from urllib.parse import quote_plus 
 
 import uuid
