@@ -509,8 +509,7 @@ class BentoAPIServer:
                 'watchedAttributes': ATTRIBUTE_INPUT_DATA,
                 'notification': {
                     'endpoint': {
-                        # 'uri': request.url_root + '/ngsi-ld/ml/predict',
-                        'uri': 'https://0ba2eb3a-2ff5-4a72-9a6f-f430f9f41ad3.mock.pstmn.io/ngsi-ld/ml/predict',
+                        'uri': request.url_root + '/ngsi-ld/ml/predict',
                         'accept': 'application/json'
                     },
                     'attributes': ATTRIBUTE_INPUT_DATA
