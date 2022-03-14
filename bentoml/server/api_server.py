@@ -195,7 +195,6 @@ class BentoAPIServer:
         self.ngsild_ml_model_output = config('ngsild').get('ml_model_output')
         self.ngsild_ml_model_target_entity = config('ngsild').get('ml_model_target_entity')
         self.ngsild_ml_model_time_interval = config('ngsild').get('ml_model_time_interval')
-        self.ngsild_ml_test_none = config('ngsild').get('ml_test_none')
         
 
         self.swagger_path = os.path.join(
@@ -491,8 +490,7 @@ class BentoAPIServer:
                 'timeInterval': TIME_INTERVAL,
                 'notification': {
                     'endpoint': {
-                        # 'uri': request.url_root + '/ngsi-ld/ml/predict',
-                        'uri': 'https://0ba2eb3a-2ff5-4a72-9a6f-f430f9f41ad3.mock.pstmn.io/ngsi-ld/ml/predict',
+                        'uri': request.url_root + '/ngsi-ld/ml/predict',
                         'accept': 'application/json'
                     }
                 }
@@ -586,7 +584,7 @@ class BentoAPIServer:
         }
         
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
-        URL_ENTITIES_TEMPORAL = self.ngsild_cb_url + 'ngsi-ld/v1/temporal/entities/'
+        URL_ENTITIES_TEMPORAL = self.ngsild_cb_url + '/ngsi-ld/v1/temporal/entities/'
         AT_CONTEXT = [ self.ngsild_at_context ]
         ENTITY_OUTPUT_DATA = self.ngsild_ml_model_target_entity
         ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output
@@ -603,15 +601,14 @@ class BentoAPIServer:
         # Get the POST data, extract the input entity id
         input_data_notification = request.get_json()
         logger.info('input_data received from notification: %s\n', input_data_notification)
-        
-        # if aggregation is not required (self.ngsild_ml_model_temporal_req is empty)
-        # we "simply" GET the entity and retrieve the value for each
-        # input data required
+        ENTITY_INPUT_DATA = input_data_notification['data'][0]['id']
+        logger.info('input_data received from notification: %s\n', ENTITY_INPUT_DATA)
+
+        # if aggregation is not required (self.ngsild_ml_model_temporal_req
+        # is empty ['']) we "simply" GET the entity and retrieve the
+        # value for each input data required
         input_data_list = []
-        if not TEMPORAL_REQUEST:
-            ENTITY_INPUT_DATA = input_data_notification['data'][0]['id']
-            logger.info('input_data received from notification: %s\n', ENTITY_INPUT_DATA)
-            
+        if TEMPORAL_REQUEST == ['']:
             # We GET the entity, and retrieve all input values data from it
             r = requests.get(URL_ENTITIES+ENTITY_INPUT_DATA, headers=headers)
             logger.info('Getting the ENTITY_INPUT_DATA paylod: %s\n', r.json())
@@ -626,6 +623,7 @@ class BentoAPIServer:
                     input_data_list.append(r.json()[input_d]['value'])
             else:
                 input_data_list.append(r.json()[ATTRIBUTE_INPUT_DATA]['value'])
+            input_data_list=[input_data_list]
         # if aggregation is required
         else:
             logger.info('TEMPORAL_REQUEST: %s\n', TEMPORAL_REQUEST)
@@ -647,7 +645,7 @@ class BentoAPIServer:
                             unit = time.split(' ')[1]
                             if unit == 'day':
                                 td = timedelta(days=period)
-                            # need to add other unit here !
+                            # need to manage other unit (minute, hour ...) here !
                             
                             target_dt = datetime.now(timezone.utc) - td
                             target_dt_str = target_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -657,16 +655,41 @@ class BentoAPIServer:
                             unit = time.split(' ')[1]
                             if unit == 'day':
                                 td = timedelta(days=period)
-                            # need to add other unit here !
+                            # need to manage other unit (minute, hour ...) here !
+
                             target_dt = datetime.now(timezone.utc) + td
                             target_dt_str = target_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                         query = query + '&' + 'time=' + target_dt_str
                     else:
                         query = query + '&' + item
+
+                logger.info('Aggregation query: %s\n', query)
                 # We perform the temporal aggregration request for this input data
                 r = requests.get(URL_ENTITIES_TEMPORAL+ENTITY_INPUT_DATA+query, headers=headers)
-                values = [item[0] for item in r.json()[input_d][0]['values']]
+                logger.info('Aggregation query response: %s\n', r.json())
+
+                # The aggregation can return one or several values
+                # actually a list of one or several list, such as:
+                # [[0.2,"2022-03-08T00:00:00Z"]]. We only get the values
+                # (which will be a list of one or several values)
+                #
+                # Also need to catch payload with a datasetId where
+                # values is part of a list.
+                if isinstance(r.json()[input_d], list):
+                    values = r.json()[input_d][0]['values']
+                else:
+                    values = r.json()[input_d]['values']
+                if len(values) == 1:
+                    values = [values[0][0]]
+                else:
+                    values = [item[0] for item in values]
+                
                 input_data_list.append(values)
+            # We need to transpose the list to have the data in a
+            # proper sequence.
+            input_data_list = np.array(input_data_list).transpose().tolist()
+
+        logger.info('input_data_list %s\n', input_data_list)
 
         ####
 
@@ -678,7 +701,7 @@ class BentoAPIServer:
 
         # The current model expect a 2 dimension data
         # This should preferably be fixed in the inference model
-        input_data_list = [input_data_list]
+        # input_data_list = [input_data_list]
         
         logger.info('Calling bentoml /predict ...')
         predict_api = self.bento_service.inference_apis[0]
