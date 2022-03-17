@@ -639,25 +639,27 @@ class BentoAPIServer:
                     if item.startswith('time='):
                         time = item.split('=')[1]
                         if time.startswith('-'):
-                            # past
+                            past = True
                             period = float(time.split(' ')[0][1:])
-                            unit = time.split(' ')[1]
-                            if unit == 'day':
-                                td = timedelta(days=period)
-                            # need to manage other unit (minute, hour ...) here !
-                            
-                            target_dt = datetime.now(timezone.utc) - td
-                            target_dt_str = target_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                         else:
-                            # futur
+                            past = False
                             period = float(time.split(' ')[0])
-                            unit = time.split(' ')[1]
-                            if unit == 'day':
-                                td = timedelta(days=period)
-                            # need to manage other unit (minute, hour ...) here !
+                        unit = time.split(' ')[1]
 
+                        # check the unit
+                        if unit == 'minute' or unit == 'minutes':
+                            td = timedelta(minutes=period)
+                        elif unit == 'hour' or unit == 'hours':
+                            td = timedelta(hours=period)
+                        elif unit == 'day' or unit == 'days':
+                            td = timedelta(days=period)
+                        elif unit == 'week' or unit == 'weeks':
+                            td = timedelta(weeks=period)
+                        if past:
+                            target_dt = datetime.now(timezone.utc) - td
+                        else:
                             target_dt = datetime.now(timezone.utc) + td
-                            target_dt_str = target_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        target_dt_str = target_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
                         query = query + '&' + 'time=' + target_dt_str
                     else:
                         query = query + '&' + item
@@ -665,6 +667,7 @@ class BentoAPIServer:
                 logger.info('Aggregation query: %s\n', query)
                 # We perform the temporal aggregration request for this input data
                 r = requests.get(URL_ENTITIES_TEMPORAL+ENTITY_INPUT_DATA+query, headers=headers)
+                logger.info('Aggregation query status code: %s\n', r.status_code)
                 logger.info('Aggregation query response: %s\n', r.json())
 
                 # The aggregation can return one or several values
@@ -691,16 +694,10 @@ class BentoAPIServer:
         logger.info('input_data_list %s\n', input_data_list)
 
         ####
-
         ## NEED TO LOOK AT THE DIMENSION of input_data_list
         ## Probably could be either 1 dim (non temporal) or 2 dim (temporal)
-
-        #### 
-
-
-        # The current model expect a 2 dimension data
-        # This should preferably be fixed in the inference model
-        # input_data_list = [input_data_list]
+        ## Should be taken care of by the ML model (know what it expect)
+        ####
         
         logger.info('Calling bentoml /predict ...')
         predict_api = self.bento_service.inference_apis[0]
