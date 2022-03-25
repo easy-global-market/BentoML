@@ -37,7 +37,6 @@ import requests
 from datetime import datetime, timezone, timedelta
 import pytz
 import numpy as np
-import csv
 from urllib.parse import quote_plus 
 
 import uuid
@@ -192,9 +191,11 @@ class BentoAPIServer:
         self.ngsild_ml_model_urn = config('ngsild').get('ml_model_urn')
         self.ngsild_ml_model_entity_input_type = config('ngsild').get('ml_model_entity_input_type')
         self.ngsild_ml_model_input = config('ngsild').get('ml_model_input')
+        self.ngsild_ml_model_temporal_req = config('ngsild').get('ml_model_temporal_req')
         self.ngsild_ml_model_output = config('ngsild').get('ml_model_output')
         self.ngsild_ml_model_target_entity = config('ngsild').get('ml_model_target_entity')
         self.ngsild_ml_model_time_interval = config('ngsild').get('ml_model_time_interval')
+        
 
         self.swagger_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), 'static_content'
@@ -456,7 +457,7 @@ class BentoAPIServer:
         ENTITY_INPUT_TYPE = self.ngsild_ml_model_entity_input_type
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input.split(',')
         TIME_INTERVAL = self.ngsild_ml_model_time_interval
-        logger.info('ATTRIBUTE_INPUT_DATA: %s', ATTRIBUTE_INPUT_DATA)
+        logger.info('ATTRIBUTE_INPUT_DATA: %s\n', ATTRIBUTE_INPUT_DATA)
 
         # Get the POST data
         mlprocessing_notification = request.get_json()
@@ -489,8 +490,7 @@ class BentoAPIServer:
                 'timeInterval': TIME_INTERVAL,
                 'notification': {
                     'endpoint': {
-                        # 'uri': request.url_root + '/ngsi-ld/ml/predict',
-                        'uri': 'https://0ba2eb3a-2ff5-4a72-9a6f-f430f9f41ad3.mock.pstmn.io/ngsi-ld/ml/predict',
+                        'uri': request.url_root + '/ngsi-ld/ml/predict',
                         'accept': 'application/json'
                     }
                 }
@@ -509,8 +509,7 @@ class BentoAPIServer:
                 'watchedAttributes': ATTRIBUTE_INPUT_DATA,
                 'notification': {
                     'endpoint': {
-                        # 'uri': request.url_root + '/ngsi-ld/ml/predict',
-                        'uri': 'https://0ba2eb3a-2ff5-4a72-9a6f-f430f9f41ad3.mock.pstmn.io/ngsi-ld/ml/predict',
+                        'uri': request.url_root + '/ngsi-ld/ml/predict',
                         'accept': 'application/json'
                     },
                     'attributes': ATTRIBUTE_INPUT_DATA
@@ -567,8 +566,11 @@ class BentoAPIServer:
 
         We need to:
         * Extract input entity id
-        * Query each input data from configuration ml_model_input (assuming they all
+        * if aggregation is not required, query each input data
+          from configuration ml_model_input (assuming they all
           are properties of the input entity)
+        * if aggregation is required, perform aggreation for each
+          input data
         * perform a prediction AND update the target entity
         """
         logger.info("-- Entering handle_ml_predict ...")
@@ -581,41 +583,121 @@ class BentoAPIServer:
         }
         
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
+        URL_ENTITIES_TEMPORAL = self.ngsild_cb_url + '/ngsi-ld/v1/temporal/entities/'
         AT_CONTEXT = [ self.ngsild_at_context ]
         ENTITY_OUTPUT_DATA = self.ngsild_ml_model_target_entity
         ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output
         ML_MODEL_URN = self.ngsild_ml_model_urn
+        
         # Create a list of input data
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input.split(',')
         logger.info("ATTRIBUTE_INPUT_DATA: %s\n", ATTRIBUTE_INPUT_DATA)
-
+        
+        # Create a list of temporal requests (there should be one for
+        # each input data)
+        TEMPORAL_REQUEST = self.ngsild_ml_model_temporal_req.split(',')
+        
         # Get the POST data, extract the input entity id
         input_data_notification = request.get_json()
         logger.info('input_data received from notification: %s\n', input_data_notification)
-
-
         ENTITY_INPUT_DATA = input_data_notification['data'][0]['id']
         logger.info('input_data received from notification: %s\n', ENTITY_INPUT_DATA)
-        
-        # We GET the entity, and retrieve all input values data from it
-        r = requests.get(URL_ENTITIES+ENTITY_INPUT_DATA, headers=headers)
-        logger.info('Getting the ENTITY_INPUT_DATA paylod: %s\n', r.json())
 
-        # Get all input data from the input entity. Input data to get are
-        # part of configuration 
-        # (if several inputs, it should be a list)
-        # and create a list of values
+        # if aggregation is not required (self.ngsild_ml_model_temporal_req
+        # is empty ['']) we "simply" GET the entity and retrieve the
+        # value for each input data required
         input_data_list = []
-        if type(ATTRIBUTE_INPUT_DATA) is list:
-            for input_d in ATTRIBUTE_INPUT_DATA:
-                logger.info('input_d: %s\n', input_d)
-                input_data_list.append(r.json()[input_d]['value'])
-        else:
-            input_data_list.append(r.json()[ATTRIBUTE_INPUT_DATA]['value'])
+        if TEMPORAL_REQUEST == ['']:
+            # We GET the entity, and retrieve all input values data from it
+            r = requests.get(URL_ENTITIES+ENTITY_INPUT_DATA, headers=headers)
+            logger.info('Getting the ENTITY_INPUT_DATA paylod: %s\n', r.json())
 
-        # The current model expect a 2 dimension data
-        # This should preferably be fixed in the inference model
-        input_data_list = [input_data_list]
+            # Get all input data from the input entity. Input data to get are
+            # part of configuration 
+            # (if several inputs, it should be a list)
+            # and create a list of values
+            if type(ATTRIBUTE_INPUT_DATA) is list:
+                for input_d in ATTRIBUTE_INPUT_DATA:
+                    logger.info('input_d: %s\n', input_d)
+                    input_data_list.append(r.json()[input_d]['value'])
+            else:
+                input_data_list.append(r.json()[ATTRIBUTE_INPUT_DATA]['value'])
+            input_data_list=[input_data_list]
+        # if aggregation is required
+        else:
+            logger.info('TEMPORAL_REQUEST: %s\n', TEMPORAL_REQUEST)
+            for input_d, aggreq in zip(ATTRIBUTE_INPUT_DATA, TEMPORAL_REQUEST):
+                if input_d.startswith('https://'):
+                    input_d_urlencoded = quote_plus(input_d)
+                else:
+                    input_d_urlencoded = input_d
+                query = '?attrs=' + input_d_urlencoded
+                
+                aggreq=aggreq.split('&')
+                for item in aggreq:
+                    # special treatment for time, need to transform a period into a valid date
+                    if item.startswith('time='):
+                        time = item.split('=')[1]
+                        if time.startswith('-'):
+                            past = True
+                            period = float(time.split(' ')[0][1:])
+                        else:
+                            past = False
+                            period = float(time.split(' ')[0])
+                        unit = time.split(' ')[1]
+
+                        # check the unit
+                        if unit == 'minute' or unit == 'minutes':
+                            td = timedelta(minutes=period)
+                        elif unit == 'hour' or unit == 'hours':
+                            td = timedelta(hours=period)
+                        elif unit == 'day' or unit == 'days':
+                            td = timedelta(days=period)
+                        elif unit == 'week' or unit == 'weeks':
+                            td = timedelta(weeks=period)
+                        if past:
+                            target_dt = datetime.now(timezone.utc) - td
+                        else:
+                            target_dt = datetime.now(timezone.utc) + td
+                        target_dt_str = target_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        query = query + '&' + 'time=' + target_dt_str
+                    else:
+                        query = query + '&' + item
+
+                logger.info('Aggregation query: %s\n', query)
+                # We perform the temporal aggregration request for this input data
+                r = requests.get(URL_ENTITIES_TEMPORAL+ENTITY_INPUT_DATA+query, headers=headers)
+                logger.info('Aggregation query status code: %s\n', r.status_code)
+                logger.info('Aggregation query response: %s\n', r.json())
+
+                # The aggregation can return one or several values
+                # actually a list of one or several list, such as:
+                # [[0.2,"2022-03-08T00:00:00Z"]]. We only get the values
+                # (which will be a list of one or several values)
+                #
+                # Also need to catch payload with a datasetId where
+                # values is part of a list.
+                if isinstance(r.json()[input_d], list):
+                    values = r.json()[input_d][0]['values']
+                else:
+                    values = r.json()[input_d]['values']
+                if len(values) == 1:
+                    values = [values[0][0]]
+                else:
+                    values = [item[0] for item in values]
+                
+                input_data_list.append(values)
+            # We need to transpose the list to have the data in a
+            # proper sequence.
+            input_data_list = np.array(input_data_list).transpose().tolist()
+
+        logger.info('input_data_list %s\n', input_data_list)
+
+        ####
+        ## NEED TO LOOK AT THE DIMENSION of input_data_list
+        ## Probably could be either 1 dim (non temporal) or 2 dim (temporal)
+        ## Should be taken care of by the ML model (know what it expect)
+        ####
         
         logger.info('Calling bentoml /predict ...')
         predict_api = self.bento_service.inference_apis[0]
