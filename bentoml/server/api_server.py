@@ -457,6 +457,7 @@ class BentoAPIServer:
         ENTITY_INPUT_TYPE = self.ngsild_ml_model_entity_input_type
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input.split(',')
         TIME_INTERVAL = self.ngsild_ml_model_time_interval
+        logger.info('SUBSCRIPTION_INPUT_DATA id: %s\n', SUBSCRIPTION_INPUT_DATA)
         logger.info('ATTRIBUTE_INPUT_DATA: %s\n', ATTRIBUTE_INPUT_DATA)
 
         # Get the POST data
@@ -476,7 +477,8 @@ class BentoAPIServer:
 
         # When entityID value is 'TIME', we set a TIME subscription
         # Else a subscription based on change of attributes
-        if ENTITY_INPUT_DATA == 'TIME':
+        if TIME_INTERVAL != '':
+            logger.info('Creating TIME subscription of : %s seconds', TIME_INTERVAL)
             json_ = {
                 '@context': AT_CONTEXT,
                 'id': SUBSCRIPTION_INPUT_DATA,
@@ -489,13 +491,14 @@ class BentoAPIServer:
                 ],
                 'timeInterval': TIME_INTERVAL,
                 'notification': {
-                    'endpoint': {
+                    'endpoint': { 
                         'uri': request.url_root + '/ngsi-ld/ml/predict',
                         'accept': 'application/json'
                     }
                 }
             }
         else:
+            logger.info('Creating ATTRIBUTE subscription')
             json_ = {
                 '@context': AT_CONTEXT,
                 'id': SUBSCRIPTION_INPUT_DATA,
@@ -579,19 +582,20 @@ class BentoAPIServer:
         access_token = self.ngsild_access_token
         headers = {
             'Authorization': 'Bearer ' + access_token,
-            'Content-Type': 'application/ld+json'
+            'Content-Type': 'application/json',
+            'Link': '<'+ self.ngsild_at_context + '>'
         }
         
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
         URL_ENTITIES_TEMPORAL = self.ngsild_cb_url + '/ngsi-ld/v1/temporal/entities/'
-        AT_CONTEXT = [ self.ngsild_at_context ]
         ENTITY_OUTPUT_DATA = self.ngsild_ml_model_target_entity
-        ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output
         ML_MODEL_URN = self.ngsild_ml_model_urn
         
-        # Create a list of input data
+        # Create a list of input/output data
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input.split(',')
         logger.info("ATTRIBUTE_INPUT_DATA: %s\n", ATTRIBUTE_INPUT_DATA)
+        ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output.split(',')
+        logger.info("ATTRIBUTE_OUTPUT_DATA: %s\n", ATTRIBUTE_OUTPUT_DATA)
         
         # Create a list of temporal requests (there should be one for
         # each input data)
@@ -703,31 +707,28 @@ class BentoAPIServer:
         predict_api = self.bento_service.inference_apis[0]
         predict_req = Request.from_values(data=str(input_data_list))
         predict_res = predict_api.handle_request(predict_req)
-        prediction = predict_res.get_json()
-        logger.info('raw (get_json()) prediction received from /predict: %s', prediction)
+        predictions = predict_res.get_json()
+        logger.info('raw (get_json()) predictions received from /predict: %s', predictions)
 
         # Create NGSI-LD request to update Entity/Property
         timezone_GMT = pytz.timezone('GMT')
         predictedAt = timezone_GMT.localize(datetime.now().replace(microsecond=0)).isoformat()
         logger.info('predictedAt UTC: %s', predictedAt)
 
-        # The current model return two values for prediction
-        # Let's take only one ...
-        prediction = prediction[0]
-
-        json_ = {
-            '@context': AT_CONTEXT,
-            'value': prediction,
-            'observedAt': predictedAt,
-            'computedBy': {
-                'type': 'Relationship',
-                'object': ML_MODEL_URN
+        # Update the attribute(s) of the target entity with the prediction(s)
+        for property_, prediction in zip(ATTRIBUTE_OUTPUT_DATA, predictions):
+            json_ = {
+                'value': prediction,
+                'observedAt': predictedAt,
+                'computedBy': {
+                    'type': 'Relationship',
+                    'object': ML_MODEL_URN
+                }
             }
-        }
-
-        URL_PATCH_PREDICTION = URL_ENTITIES + ENTITY_OUTPUT_DATA + '/attrs/' + ATTRIBUTE_OUTPUT_DATA
-        r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
-        logger.info('requests status_code for (PATCH) Entity with prediction: %s\n', r.status_code)
+            logger.info('attempting to patch: %s\n',  property_)
+            URL_PATCH_PREDICTION = URL_ENTITIES + ENTITY_OUTPUT_DATA + '/attrs/' + property_
+            r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
+            logger.info('requests status_code for (PATCH) attribute with prediction: %s\n',  r.status_code)
 
         # Finally, respond to the initial received request (notification)
         # with empty 200
