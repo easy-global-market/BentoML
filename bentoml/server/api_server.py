@@ -34,9 +34,10 @@ from bentoml.service import InferenceAPI
 from bentoml.tracing import get_tracer
 
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pytz
 import numpy as np
+from urllib.parse import quote_plus 
 
 import uuid
 
@@ -187,9 +188,14 @@ class BentoAPIServer:
         self.ngsild_cb_url = config('ngsild').get('cb_url')
         self.ngsild_at_context = config('ngsild').get('at_context')
         self.ngsild_access_token = config('ngsild').get('access_token')
-        self.ngsild_ml_model_id = config('ngsild').get('ml_model_id')
+        self.ngsild_ml_model_urn = config('ngsild').get('ml_model_urn')
+        self.ngsild_ml_model_entity_input_type = config('ngsild').get('ml_model_entity_input_type')
         self.ngsild_ml_model_input = config('ngsild').get('ml_model_input')
+        self.ngsild_ml_model_temporal_req = config('ngsild').get('ml_model_temporal_req')
         self.ngsild_ml_model_output = config('ngsild').get('ml_model_output')
+        self.ngsild_ml_model_target_entity = config('ngsild').get('ml_model_target_entity')
+        self.ngsild_ml_model_time_interval = config('ngsild').get('ml_model_time_interval')
+        
 
         self.swagger_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), 'static_content'
@@ -395,42 +401,47 @@ class BentoAPIServer:
             methods=["POST"]
         )
 
+
     def handle_ml_processing(self):
         """
-        Handle receipt of a notification from subscription to MLProcessing entities.
-        It indicates a new user is interested in using this MLModel.
+        Handle receipt of a notification from subscription to
+        MLProcessing entities. It indicates a new Application is interested
+        in using this MLModel.
 
-        On receipt of this notification, the information on where to
-        find the input data for prediction is retrieved, and a subscription
-        is created to be notified when this input data changes.
+        On receipt of this notification, the information on where (specifically, on which
+        entity) to find the input data for prediction is retrieved, and a subscription
+        is created to be notified when some input data of the entity changes.
+        The input data are configurable, i.e. must be provided through environment variables
+        when executing the BENTO model.
 
         The notification received looks like:
 
         {
-            'id': 'urn:ngsi-ld:Notification:fadc5090-2425-42f8-b318-1966fa0e0011',
-            'type': 'Notification',
-            'subscriptionId': 'urn:ngsi-ld:Subscription:MLModel:flow:predict:71dba318-2989-4c76-a22c-52a53f04759b',
-            'notifiedAt': '2021-05-03T09:53:50.330686Z',
-            'data': [
+            "id": "urn:ngsi-ld:Notification:933978d4-deab-48d5-9d63-ee532602fe73",
+            "type": "Notification",
+            "subscriptionId": "urn:ngsi-ld:Subscription:MLModel:flow:3M:predict:71dba318-2989-4c76-a22c-52a53f04759b",
+            "notifiedAt": "2022-03-09T15:57:02.034465857Z",
+            "data": [
                 {
-                    'id': 'urn:ngsi-ld:MLProcessing:4bbb2b09-ad6c-4fb9-8f40-8d37e4cddd3a',
-                    'type': 'MLProcessing',
-                    'entities': [
-                        {
-                            "id": "urn:ngsi-ld:River:014f5730-72ab-4554-a106-afbe5d4d9d26",
-                            "type": "River"
-                        }
-                    ],
-                    '@context': [
-                        'https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-compound.jsonl'
-                    ]
+                "id": "urn:ngsi-ld:MLProcessing:4bbb2b09-ad6c-4fb9-8f40-8d37e4cddd3a",
+                "type": "MLProcessing",
+                "entityID": {
+                    "type": "Property",
+                    "createdAt": "2022-03-09T15:57:01.928429608Z",
+                    "value": "urn:ngsi-ld:River:Siagne:6170cc52-0fb1-4ac2-b429-f02acbd2001b"
+                },
+                "@context": [
+                    "https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-precipitation-contexts.jsonld"
+                ]
                 }
             ]
         }
 
         We need to:
-        * extract from the MLProcessing entity, where to get the input data (id and type of the entity for now)
-        * create a subscription to this data. 
+        * Extract the entityID from the notification
+        * Finally create a subscription to the change of this data. Subscription
+          could be attribute based or time based. From time based, the value of the
+          EntityID property will be the code 'TIME' 
         """
         logger.info("Received a notification for a MLProcessing entity")
 
@@ -443,44 +454,78 @@ class BentoAPIServer:
         URL_SUBSCRIPTION = self.ngsild_cb_url + '/ngsi-ld/v1/subscriptions/'
         SUBSCRIPTION_INPUT_DATA = 'urn:ngsi-ld:Subscription:input:data:'+str(uuid.uuid4())
         AT_CONTEXT = [ self.ngsild_at_context ]
+        ENTITY_INPUT_TYPE = self.ngsild_ml_model_entity_input_type
+        ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input.split(',')
+        TIME_INTERVAL = self.ngsild_ml_model_time_interval
+        logger.info('SUBSCRIPTION_INPUT_DATA id: %s\n', SUBSCRIPTION_INPUT_DATA)
+        logger.info('ATTRIBUTE_INPUT_DATA: %s\n', ATTRIBUTE_INPUT_DATA)
 
         # Get the POST data
         mlprocessing_notification = request.get_json()
+        logger.info('Notification received: %s', mlprocessing_notification)
 
-        # Get the MLProcessing entity and extract the entities information (to be extended later)
-        mlprocessing_entity = mlprocessing_notification['data'][0]
-        logger.info("Got following MLProcessing entity: %s", mlprocessing_entity)
+        #### 
 
-        input_entity_id = mlprocessing_entity['entities'][0]['id']
-        input_entity_type = mlprocessing_entity['entities'][0]['type']
+        # Getting the EntityID where to get input data
+        ENTITY_INPUT_DATA = mlprocessing_notification['data'][0]['entityID']['value']
+        logger.info('ENTITY_INPUT_DATA: %s', ENTITY_INPUT_DATA)
 
-        ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
+        # Only for testing with postman mock server, replace
+        # 'uri': request.url_root + '/ngsi-ld/ml/predict'
+        # by postman mock server id
+        # 'uri': 'https://0ba2eb3a-2ff5-4a72-9a6f-f430f9f41ad3.mock.pstmn.io/ngsi-ld/ml/predict' 
 
-        # We use the content of the MLProcessing only to get the entity id and type. 
-        # The input attribute(s) is(are) part of the the MLModel definition.
-        json_ = {
-            '@context': AT_CONTEXT,
-            'id': SUBSCRIPTION_INPUT_DATA,
-            'type': 'Subscription',
-            'entities': [
-                {
-                    'id': input_entity_id,
-                    'type': input_entity_type
+        # When entityID value is 'TIME', we set a TIME subscription
+        # Else a subscription based on change of attributes
+        if TIME_INTERVAL != '':
+            logger.info('Creating TIME subscription of : %s seconds', TIME_INTERVAL)
+            json_ = {
+                '@context': AT_CONTEXT,
+                'id': SUBSCRIPTION_INPUT_DATA,
+                'type': 'Subscription',
+                'entities': [
+                    {
+                        'id': ENTITY_INPUT_DATA,
+                        'type': ENTITY_INPUT_TYPE
+                    }
+                ],
+                'timeInterval': TIME_INTERVAL,
+                'notification': {
+                    'endpoint': { 
+                        'uri': request.url_root + '/ngsi-ld/ml/predict',
+                        'accept': 'application/json'
+                    }
                 }
-            ],
-            'watchedAttributes': [ATTRIBUTE_INPUT_DATA],
-            'notification': {
-                'endpoint': {
-                    'uri': request.url_root + '/ngsi-ld/ml/predict',
-                    'accept': 'application/json'
-                },
-                'attributes': [ATTRIBUTE_INPUT_DATA]
             }
-        }
+        else:
+            logger.info('Creating ATTRIBUTE subscription')
+            json_ = {
+                '@context': AT_CONTEXT,
+                'id': SUBSCRIPTION_INPUT_DATA,
+                'type': 'Subscription',
+                'entities': [
+                    {
+                        'id': ENTITY_INPUT_DATA,
+                        'type': ENTITY_INPUT_TYPE
+                    }
+                ],
+                'watchedAttributes': ATTRIBUTE_INPUT_DATA,
+                'notification': {
+                    'endpoint': {
+                        'uri': request.url_root + '/ngsi-ld/ml/predict',
+                        'accept': 'application/json'
+                    },
+                    'attributes': ATTRIBUTE_INPUT_DATA
+                }
+            }
+
+        logger.info('json of request: %s', json_)
 
         # Create the subscription
         r = requests.post(URL_SUBSCRIPTION, json=json_, headers=headers)
-        logger.info('Response status code from creation of the subscription: %s', r.status_code)
+        logger.info('request status_code for creation of the Subscription: %s', r.status_code)
+        if r.status_code != 201:
+            logger.info('Error: %s', r.json())
 
         # Finally, respond to the initial received request (notification) with a 200        
         response = make_response(
@@ -489,6 +534,7 @@ class BentoAPIServer:
         )
         logger.info("Returning from MLProcessing handling")
         return response
+
 
     def handle_ml_predict(self):
         """
@@ -499,34 +545,36 @@ class BentoAPIServer:
         The notification received looks like:
 
         {
-            "id": "urn:ngsi-ld:Notification:cc231a15-d220-403c-bfc6-ad60bc49466f",
-            "type": "Notification",
-            "subscriptionId": "urn:ngsi-ld:Subscription:input:data:2c30fa86-a25c-4191-8311-8954294e92b3",
-            "notifiedAt": "2021-05-04T06:45:32.83178Z",
-            "data": [
+            'id': 'urn:ngsi-ld:Notification:cc231a15-d220-403c-bfc6-ad60bc49466f',
+            'type': 'Notification',
+            'subscriptionId': 'urn:ngsi-ld:Subscription:input:data:2c30fa86-a25c-4191-8311-8954294e92b3',
+            'notifiedAt': '2021-05-04T06:45:32.83178Z',
+            'data': [
                 {
-                    "id": "urn:ngsi-ld:River:014f5730-72ab-4554-a106-afbe5d4d9d26",
-                    "type": "River",
-                    "precipitation": {
-                        "type": "Property",
-                        "createdAt": "2021-05-04T06:45:32.674520Z",
-                        "value": 2.2,
-                        "observedAt": "2021-05-04T06:35:22.000Z",
-                        "unitCode": "MMT"
+                    'id': 'urn:ngsi-ld:River:Siagne:6170cc52-0fb1-4ac2-b429-f02acbd2001b',
+                    'type': 'River',
+                    'precipitation': {
+                        'type': 'Property',
+                        'createdAt': '2021-05-04T06:45:32.674520Z',
+                        'value': 2.2,
+                        'observedAt': '2021-05-04T06:35:22.000Z',
+                        'unitCode': 'MMT'
                     },
-                    "@context": [
-                        "https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-precipitation-compound.jsonld"
+                    '@context': [
+                        'https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-precipitation-compound.jsonld'
                     ]
                 }
             ]
         }
 
         We need to:
-        * Extract the input_data from the NGSI-LD Notification,
-        * Reshape the data (2 dims array)
-        * Predict using the deployed BentoML service at /predict
-        * Create a NGSI-LD request to update the appropriate Entity/Property
-        * Update the Entity/Property via PATCH
+        * Extract input entity id
+        * if aggregation is not required, query each input data
+          from configuration ml_model_input (assuming they all
+          are properties of the input entity)
+        * if aggregation is required, perform aggreation for each
+          input data
+        * perform a prediction AND update the target entity
         """
         logger.info("-- Entering handle_ml_predict ...")
 
@@ -534,64 +582,163 @@ class BentoAPIServer:
         access_token = self.ngsild_access_token
         headers = {
             'Authorization': 'Bearer ' + access_token,
-            'Content-Type': 'application/ld+json'
+            'Content-Type': 'application/json',
+            'Link': '<'+ self.ngsild_at_context + '>'
         }
-        MLMODEL_UUID = self.ngsild_ml_model_id
+        
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
-        AT_CONTEXT = [ self.ngsild_at_context ]
-        ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
-        ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output
-
-        # Get the POST data
+        URL_ENTITIES_TEMPORAL = self.ngsild_cb_url + '/ngsi-ld/v1/temporal/entities/'
+        ENTITY_OUTPUT_DATA = self.ngsild_ml_model_target_entity
+        ML_MODEL_URN = self.ngsild_ml_model_urn
+        
+        # Create a list of input/output data
+        ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input.split(',')
+        logger.info("ATTRIBUTE_INPUT_DATA: %s\n", ATTRIBUTE_INPUT_DATA)
+        ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output.split(',')
+        logger.info("ATTRIBUTE_OUTPUT_DATA: %s\n", ATTRIBUTE_OUTPUT_DATA)
+        
+        # Create a list of temporal requests (there should be one for
+        # each input data)
+        TEMPORAL_REQUEST = self.ngsild_ml_model_temporal_req.split(',')
+        
+        # Get the POST data, extract the input entity id
         input_data_notification = request.get_json()
+        logger.info('input_data received from notification: %s\n', input_data_notification)
+        ENTITY_INPUT_DATA = input_data_notification['data'][0]['id']
+        logger.info('input_data received from notification: %s\n', ENTITY_INPUT_DATA)
 
-        input_entity = input_data_notification['data'][0]['id']
-        input_data = input_data_notification['data'][0][ATTRIBUTE_INPUT_DATA]['value']
-        logger.info('input_data received from notification: %s', input_data)
+        # if aggregation is not required (self.ngsild_ml_model_temporal_req
+        # is empty ['']) we "simply" GET the entity and retrieve the
+        # value for each input data required
+        input_data_list = []
+        if TEMPORAL_REQUEST == ['']:
+            # We GET the entity, and retrieve all input values data from it
+            r = requests.get(URL_ENTITIES+ENTITY_INPUT_DATA, headers=headers)
+            logger.info('Getting the ENTITY_INPUT_DATA paylod: %s\n', r.json())
 
-        # reshaping input data into a 2D array
-        input_data = np.array([input_data]).reshape(-1,1)
+            # Get all input data from the input entity. Input data to get are
+            # part of configuration 
+            # (if several inputs, it should be a list)
+            # and create a list of values
+            if type(ATTRIBUTE_INPUT_DATA) is list:
+                for input_d in ATTRIBUTE_INPUT_DATA:
+                    logger.info('input_d: %s\n', input_d)
+                    input_data_list.append(r.json()[input_d]['value'])
+            else:
+                input_data_list.append(r.json()[ATTRIBUTE_INPUT_DATA]['value'])
+            input_data_list=[input_data_list]
+        # if aggregation is required
+        else:
+            logger.info('TEMPORAL_REQUEST: %s\n', TEMPORAL_REQUEST)
+            for input_d, aggreq in zip(ATTRIBUTE_INPUT_DATA, TEMPORAL_REQUEST):
+                if input_d.startswith('https://'):
+                    input_d_urlencoded = quote_plus(input_d)
+                else:
+                    input_d_urlencoded = input_d
+                query = '?attrs=' + input_d_urlencoded
+                
+                aggreq=aggreq.split('&')
+                for item in aggreq:
+                    # special treatment for time, need to transform a period into a valid date
+                    if item.startswith('time='):
+                        time = item.split('=')[1]
+                        if time.startswith('-'):
+                            past = True
+                            period = float(time.split(' ')[0][1:])
+                        else:
+                            past = False
+                            period = float(time.split(' ')[0])
+                        unit = time.split(' ')[1]
 
-        ### CALLING BENTOML /predict HERE ###
-        # 1. get the inference API (behind /predict)
-        # 2. build a request object from tje input data
-        # 3. perform the prediction
+                        # check the unit
+                        if unit == 'minute' or unit == 'minutes':
+                            td = timedelta(minutes=period)
+                        elif unit == 'hour' or unit == 'hours':
+                            td = timedelta(hours=period)
+                        elif unit == 'day' or unit == 'days':
+                            td = timedelta(days=period)
+                        elif unit == 'week' or unit == 'weeks':
+                            td = timedelta(weeks=period)
+                        if past:
+                            target_dt = datetime.now(timezone.utc) - td
+                        else:
+                            target_dt = datetime.now(timezone.utc) + td
+                        target_dt_str = target_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        query = query + '&' + 'time=' + target_dt_str
+                    else:
+                        query = query + '&' + item
+
+                logger.info('Aggregation query: %s\n', query)
+                # We perform the temporal aggregration request for this input data
+                r = requests.get(URL_ENTITIES_TEMPORAL+ENTITY_INPUT_DATA+query, headers=headers)
+                logger.info('Aggregation query status code: %s\n', r.status_code)
+                logger.info('Aggregation query response: %s\n', r.json())
+
+                # The aggregation can return one or several values
+                # actually a list of one or several list, such as:
+                # [[0.2,"2022-03-08T00:00:00Z"]]. We only get the values
+                # (which will be a list of one or several values)
+                #
+                # Also need to catch payload with a datasetId where
+                # values is part of a list.
+                if isinstance(r.json()[input_d], list):
+                    values = r.json()[input_d][0]['values']
+                else:
+                    values = r.json()[input_d]['values']
+                if len(values) == 1:
+                    values = [values[0][0]]
+                else:
+                    values = [item[0] for item in values]
+                
+                input_data_list.append(values)
+            # We need to transpose the list to have the data in a
+            # proper sequence.
+            input_data_list = np.array(input_data_list).transpose().tolist()
+
+        logger.info('input_data_list %s\n', input_data_list)
+
+        ####
+        ## NEED TO LOOK AT THE DIMENSION of input_data_list
+        ## Probably could be either 1 dim (non temporal) or 2 dim (temporal)
+        ## Should be taken care of by the ML model (know what it expect)
+        ####
+        
         logger.info('Calling bentoml /predict ...')
         predict_api = self.bento_service.inference_apis[0]
-        predict_req = Request.from_values(data=str(input_data))
+        predict_req = Request.from_values(data=str(input_data_list))
         predict_res = predict_api.handle_request(predict_req)
-
-        prediction = predict_res.get_json()
-        logger.info('raw (get_json()) prediction received from /predict: %s', prediction)
+        predictions = predict_res.get_json()
+        logger.info('raw (get_json()) predictions received from /predict: %s', predictions)
 
         # Create NGSI-LD request to update Entity/Property
-        prediction = round(float(np.array(prediction).squeeze()), 2)
         timezone_GMT = pytz.timezone('GMT')
         predictedAt = timezone_GMT.localize(datetime.now().replace(microsecond=0)).isoformat()
         logger.info('predictedAt UTC: %s', predictedAt)
 
-        json_ = {
-            '@context': AT_CONTEXT,
-            'value': prediction,
-            'observedAt': predictedAt,
-            'computedBy': {
-                'type': 'Relationship',
-                'object': MLMODEL_UUID
+        # Update the attribute(s) of the target entity with the prediction(s)
+        for property_, prediction in zip(ATTRIBUTE_OUTPUT_DATA, predictions):
+            json_ = {
+                'value': prediction,
+                'observedAt': predictedAt,
+                'computedBy': {
+                    'type': 'Relationship',
+                    'object': ML_MODEL_URN
+                }
             }
-        }
-
-        URL_PATCH_PREDICTION = URL_ENTITIES + input_entity + '/attrs/' + ATTRIBUTE_OUTPUT_DATA
-        r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
-        logger.info('requests status_code for (PATCH) Entity with prediction: %s', r.status_code)
+            logger.info('attempting to patch: %s\n',  property_)
+            URL_PATCH_PREDICTION = URL_ENTITIES + ENTITY_OUTPUT_DATA + '/attrs/' + property_
+            r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
+            logger.info('requests status_code for (PATCH) attribute with prediction: %s\n',  r.status_code)
 
         # Finally, respond to the initial received request (notification)
         # with empty 200
         response = make_response(
-            '',
+            str(),
             200,
         )
         logger.info("-- Bye by from handle_ml_predict ...")
         return response
+
 
     def setup_bento_service_api_routes(self):
         """

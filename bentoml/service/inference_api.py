@@ -293,8 +293,11 @@ class InferenceAPI(object):
 
     def handle_request(self, request: flask.Request):
         req = HTTPRequest.from_flask_request(request)
+        logger.info('-- handle_request')
         inf_task = self.input_adapter.from_http_request(req)
+        logger.info('inf_task: %s', inf_task)
         results = self.infer((inf_task,))
+        logger.info('results: %s', results)
         result = next(iter(results))
         response = self.output_adapter.to_http_response(result)
         response.headers['X-Request-Id'] = inf_task.task_id
