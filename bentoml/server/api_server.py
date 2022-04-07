@@ -40,6 +40,7 @@ import numpy as np
 from urllib.parse import quote_plus 
 
 import uuid
+from math import tanh
 
 CONTENT_TYPE_LATEST = str("text/plain; version=0.0.4; charset=utf-8")
 
@@ -147,6 +148,82 @@ def log_exception(exc_info):
     )
 
 
+def gr2m(precip, potential_evap, params, states = None, return_state = False):
+    """
+        Generated simulated streamflow for given rainfall and potential evaporation.
+
+        :param precip: Catchment average rainfall.
+        :type precip: array(float)
+        :param potential_evap: Catchment average potential evapotranspiration.
+        :type potential_evap: array(float)
+        :param params: X parameters for the model.
+        :type params: dictionary with keys X1, X5
+        :param states: Optional initial state values.
+        :type states: Dictionary with optional keys 'production_store', 'routing_store'.
+        :param return_state: If true returns a dictionary containing 'production_store' and 'routing_store'. Default: False.
+        :type return_state: boolean
+
+        :return: Array of simulated streamflow.
+    """
+
+    X1 = params['X1']
+    X2 = params['X2']
+
+    if states is None:
+        states = {}
+
+    production_store = states.get('production_store', 0)
+    routing_store = states.get('routing_store', 0)
+
+    sims = []
+    for P, PE in zip(precip, potential_evap):
+        phi = tanh(P / X1)
+        psi = tanh(PE / X1)
+
+        S1 = (production_store + X1 * phi) / (1. + phi * (production_store / X1))
+
+        P1 = P + production_store - S1
+
+        S2 = S1 * (1 - psi) / (1 + psi * (1 - S1 / X1))
+
+        production_store = S2 / pow(1. + pow(S2 / X1, 3), 1./3.)
+
+        P2 = S2 - production_store
+
+        P3 = P1 + P2
+
+        R1 = routing_store + P3
+
+        R2 = X2 * R1
+
+        Q = pow(R2, 2) / (R2 + 60)
+        sims.append(Q)
+
+        routing_store = R2 - Q
+    if return_state:
+        return sims, {'production_store': production_store, 'routing_store': routing_store}
+    else:
+        return sims
+
+
+def temperature_to_evapo(input_data_list, input_data_month, THERMAL_INDEX, CORRECTIVE_FACTORS):
+    '''
+    * Perform transformation of temperature into evapotranspiration using
+      Thornthwaite formula
+    '''
+    
+    a =  0.016 * THERMAL_INDEX + 0.5
+    temperature = [item[1] for item in input_data_list]
+    
+    # compute evapotranspiration from temperature
+    evapotranspiration = []
+    for t, m in zip(temperature, input_data_month):
+        ev = 16 * pow((10 * t / THERMAL_INDEX), a) * CORRECTIVE_FACTORS[(m - 1)]
+        evapotranspiration.append(ev)
+    
+    return(evapotranspiration)
+
+
 class BentoAPIServer:
     """
     BentoAPIServer creates a REST API server based on APIs defined with a BentoService
@@ -195,7 +272,14 @@ class BentoAPIServer:
         self.ngsild_ml_model_output = config('ngsild').get('ml_model_output')
         self.ngsild_ml_model_target_entity = config('ngsild').get('ml_model_target_entity')
         self.ngsild_ml_model_time_interval = config('ngsild').get('ml_model_time_interval')
-        
+
+        # GR2M configuration parameters
+        self.gr2m_active = config('gr2m').get('active')
+        self.gr2m_thermal_index = config('gr2m').get('thermal_index')
+        self.gr2m_corrective_factors = config('gr2m').get('corrective_factors')
+        self.gr2m_calibration_X1 = config('gr2m').get('calibration_X1')
+        self.gr2m_calibration_X2 = config('gr2m').get('calibration_X2')
+
 
         self.swagger_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), 'static_content'
@@ -600,6 +684,12 @@ class BentoAPIServer:
         # Create a list of temporal requests (there should be one for
         # each input data)
         TEMPORAL_REQUEST = self.ngsild_ml_model_temporal_req.split(',')
+
+        # Configuration required for the Hydrological model use cases
+        GRM2_ACTIVE = self.gr2m_active
+        GRM2_THERMAL_INDEX = float(self.gr2m_thermal_index)
+        GRM2_CORRECTIVE_FACTORS = [float(factor) for factor in self.gr2m_corrective_factors.split(',')]
+        GRM2_PARAMS = {'X1': float(self.gr2m_calibration_X1), 'X2': float(self.gr2m_calibration_X2)}
         
         # Get the POST data, extract the input entity id
         input_data_notification = request.get_json()
@@ -611,6 +701,7 @@ class BentoAPIServer:
         # is empty ['']) we "simply" GET the entity and retrieve the
         # value for each input data required
         input_data_list = []
+        input_data_month = []
         if TEMPORAL_REQUEST == ['']:
             # We GET the entity, and retrieve all input values data from it
             r = requests.get(URL_ENTITIES+ENTITY_INPUT_DATA, headers=headers)
@@ -689,6 +780,20 @@ class BentoAPIServer:
                     values = [values[0][0]]
                 else:
                     values = [item[0] for item in values]
+
+                ## Addition for the specific use case of Hydrological prediction ##
+                #  we need to also keep the list of dates, more particularly the
+                #  month of the (precipitation, temperature)
+                if GRM2_ACTIVE == 'True':
+                    logger.info('Entering GRM2_ACTIVE code ...\n')
+                    if not input_data_month:
+                        #  We only need to compute once, all months are identical for
+                        # all input_data (aggregation)
+                        input_data_month = r.json()[input_d][0]['values']
+                        input_data_month = [item[1] for item in input_data_month]
+
+                        # We only keep the MONTH of the date
+                        input_data_month = [int(item[5:7]) for item in input_data_month]
                 
                 input_data_list.append(values)
             # We need to transpose the list to have the data in a
@@ -702,33 +807,143 @@ class BentoAPIServer:
         ## Probably could be either 1 dim (non temporal) or 2 dim (temporal)
         ## Should be taken care of by the ML model (know what it expect)
         ####
+
+        ## This part is for the specific use case of ##
+        ## Hydrological prediction                   ##
+        if GRM2_ACTIVE == 'True':
+
+            # First step is to initialise the hydrological model
+            # using 6 months of precipitation, evapotranspiration.
+            # Evapotranspiration is computed using the temperature
+            # The input_data_list is supposed to be containing only
+            # (precipitation, temperature)
+
+            # Due to bug aggregation we ensure the input_data_list 
+            # and the input_data_month lists are of length 6
+            # Also need to reverse the order of the list, i.e. should be
+            # from older to newer (the opposite of what is returned by
+            # Stellio aggregation)
+
+            logger.info('GRM2_ACTIVE: Hydrological model initialisation ...\n')
+            input_data_list_6 = input_data_list[:6]
+            input_data_list_6.reverse()
+            input_data_month_6 = input_data_month[:6]
+            input_data_month_6.reverse()
+            evapotranspiration = temperature_to_evapo(input_data_list_6, input_data_month_6,
+                                                      GRM2_THERMAL_INDEX, GRM2_CORRECTIVE_FACTORS)
+            
+            # Initialisation of the hydrological model
+            # We need precipitation and evapotranspiration
+            precipitation = [item[0] for item in input_data_list_6]
+            _, ini_states = gr2m(precipitation, evapotranspiration, GRM2_PARAMS,
+                              return_state=True)
+
+            logger.info('GRM2 ini_states: %s\n', ini_states)
+
+            # Second step is to make 3 months predictions of (precipitation,
+            # temperature) as input_sequence to the Hydrological model. We use
+            # the last three months of the 6 months period got from aggregation
+            # Calling the inference three times while re-building the sequence
+            # at every iteration using the last prediction.
+            # We also need to build a list of 'month number' that will be used
+            # for transformation of temperature to evapotranspiration.
+            # 1. get the inference API (behind /predict)
+            # 2. build a request object from the input data + predictions
+            # 3. perform the prediction
+            input_data_month_3 = []
+            input_data_last_month = input_data_month_6[-1]
+            input_data_list_3 = input_data_list_6[3:]
+            logger.info('input_data_list_3 initial: %s\n', input_data_list_3)
+            logger.info('GRM2_ACTIVE: Calling bentoml /predict ...\n')
+            predictions = []
+            for _ in range(3):
+                # predict
+                predict_api = self.bento_service.inference_apis[0]
+                predict_req = Request.from_values(data=str(input_data_list_3))
+                predict_res = predict_api.handle_request(predict_req)
+                prediction = predict_res.get_json()
+                predictions.append(prediction)
+                # adding the prediction to the sequence for next prediction
+                input_data_list_3.pop(0)
+                input_data_list_3.append(prediction)
+                logger.info('in loop input_data_list_3: %s\n', input_data_list_3)
+                # also building a list of months number for evapotranspiration prediction
+                if input_data_last_month == 12:
+                    input_data_last_month = 1
+                else:
+                    input_data_last_month = input_data_last_month + 1
+                input_data_month_3.append(input_data_last_month)
         
-        logger.info('Calling bentoml /predict ...')
-        predict_api = self.bento_service.inference_apis[0]
-        predict_req = Request.from_values(data=str(input_data_list))
-        predict_res = predict_api.handle_request(predict_req)
-        predictions = predict_res.get_json()
-        logger.info('raw (get_json()) predictions received from /predict: %s', predictions)
+            logger.info('final input_data_list: %s\n', input_data_list_3)
+            logger.info('input_data_month_3: %s\n', input_data_month_3)
+            logger.info('and predictions: %s\n', predictions)
+            
+            # input_data_list_3 now contains the (precipitation, temperature) predictions
+            # for the next three months.
+            # We again need to transform temperature into evapotranspiration.
+            evapotranspiration = temperature_to_evapo(input_data_list_3, input_data_month_3,
+                                                      GRM2_THERMAL_INDEX, GRM2_CORRECTIVE_FACTORS)
+            logger.info('evapotranspiration: %s\n', evapotranspiration)
+            logger.info('evapotranspiration length: %s\n', len(evapotranspiration))
 
-        # Create NGSI-LD request to update Entity/Property
-        timezone_GMT = pytz.timezone('GMT')
-        predictedAt = timezone_GMT.localize(datetime.now().replace(microsecond=0)).isoformat()
-        logger.info('predictedAt UTC: %s', predictedAt)
+            # Final step is to call the hydrological model that will predict
+            # three months of flow
+            precipitation = [item[0] for item in input_data_list_3]
+            flow_predictions = gr2m(precipitation, evapotranspiration, GRM2_PARAMS,
+                                    states = ini_states)
+            
+            logger.info('flow_predictions: %s\n', flow_predictions)
+            logger.info('flow_predictions length: %s\n', len(flow_predictions))
 
-        # Update the attribute(s) of the target entity with the prediction(s)
-        for property_, prediction in zip(ATTRIBUTE_OUTPUT_DATA, predictions):
-            json_ = {
-                'value': prediction,
-                'observedAt': predictedAt,
-                'computedBy': {
-                    'type': 'Relationship',
-                    'object': ML_MODEL_URN
+            # Create NGSI-LD request to update Entity/Property
+            timezone_GMT = pytz.timezone('GMT')
+            predictedAt = timezone_GMT.localize(datetime.now().replace(microsecond=0)).isoformat()
+            logger.info('predictedAt UTC: %s', predictedAt)
+
+            for item, prediction in zip(ATTRIBUTE_OUTPUT_DATA, flow_predictions) :
+                property_, datasetId = item.split('&')
+                json_ = {
+                    'value': prediction,
+                    'observedAt': predictedAt,
+                    'datasetId': datasetId,
+                    'computedBy': {
+                        'type': 'Relationship',
+                        'object': ML_MODEL_URN
+                    }
                 }
-            }
-            logger.info('attempting to patch: %s\n',  property_)
-            URL_PATCH_PREDICTION = URL_ENTITIES + ENTITY_OUTPUT_DATA + '/attrs/' + property_
-            r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
-            logger.info('requests status_code for (PATCH) attribute with prediction: %s\n',  r.status_code)
+                URL_PATCH_PREDICTION = URL_ENTITIES + ENTITY_OUTPUT_DATA + '/attrs/' + property_
+                r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
+                logger.info('requests status_code for (PATCH) attribute with prediction: %s\n',  r.status_code)
+            ## END of Hydrological prediction use case ##
+
+        ## Standard use case here !
+        else:
+            logger.info('Calling bentoml /predict ...')
+            predict_api = self.bento_service.inference_apis[0]
+            predict_req = Request.from_values(data=str(input_data_list))
+            predict_res = predict_api.handle_request(predict_req)
+            predictions = predict_res.get_json()
+            logger.info('raw (get_json()) predictions received from /predict: %s', predictions)
+
+            # Create NGSI-LD request to update Entity/Property
+            timezone_GMT = pytz.timezone('GMT')
+            predictedAt = timezone_GMT.localize(datetime.now().replace(microsecond=0)).isoformat()
+            logger.info('predictedAt UTC: %s', predictedAt)
+
+            # Update the attribute(s) of the target entity with the prediction(s)
+            for property_, prediction in zip(ATTRIBUTE_OUTPUT_DATA, predictions):
+                json_ = {
+                    'value': prediction,
+                    'observedAt': predictedAt,
+                    'computedBy': {
+                        'type': 'Relationship',
+                        'object': ML_MODEL_URN
+                    }
+                }
+                logger.info('attempting to patch: %s\n',  property_)
+                URL_PATCH_PREDICTION = URL_ENTITIES + ENTITY_OUTPUT_DATA + '/attrs/' + property_
+                r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
+                logger.info('requests status_code for (PATCH) attribute with prediction: %s\n',  r.status_code)
 
         # Finally, respond to the initial received request (notification)
         # with empty 200
