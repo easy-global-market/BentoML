@@ -37,7 +37,8 @@ import requests
 from datetime import datetime, timezone, timedelta
 import pytz
 import numpy as np
-from urllib.parse import quote_plus 
+from urllib.parse import quote_plus
+import pandas as pd
 
 import uuid
 
@@ -195,6 +196,7 @@ class BentoAPIServer:
         self.ngsild_ml_model_output = config('ngsild').get('ml_model_output')
         self.ngsild_ml_model_target_entity = config('ngsild').get('ml_model_target_entity')
         self.ngsild_ml_model_time_interval = config('ngsild').get('ml_model_time_interval')
+        self.ngsild_ml_model_entities_ids = config('ngsild').get('ml_model_entities_ids')
         
 
         self.swagger_path = os.path.join(
@@ -590,27 +592,43 @@ class BentoAPIServer:
         URL_ENTITIES_TEMPORAL = self.ngsild_cb_url + '/ngsi-ld/v1/temporal/entities/'
         ENTITY_OUTPUT_DATA = self.ngsild_ml_model_target_entity
         ML_MODEL_URN = self.ngsild_ml_model_urn
-        
-        # Create a list of input/output data
+
+        # Create a list of input data
+        # Input data are originally property(ies) of a same unique
+        # entity !
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input.split(',')
         logger.info("ATTRIBUTE_INPUT_DATA: %s\n", ATTRIBUTE_INPUT_DATA)
+        ENTITIES_IDS = self.ngsild_ml_model_entities_ids.split(',')
+        logger.info("ENTITIES_IDS: %s\n", ENTITIES_IDS)
+
+        # Create a list of output data
         ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output.split(',')
         logger.info("ATTRIBUTE_OUTPUT_DATA: %s\n", ATTRIBUTE_OUTPUT_DATA)
         
         # Create a list of temporal requests (there should be one for
         # each input data)
         TEMPORAL_REQUEST = self.ngsild_ml_model_temporal_req.split(',')
-        
+
+        df_time = None
+
+        # WE DO NOT CARE HERE ABOUT NOTIFICATION AS IT WAS  USED TO 
+        # GET THE ONLY INPUT ENTITY AND THAT FOR THIS SUEZ USE CASE
+        # WE HAVE SEVERAL ENTITIES
+        #
         # Get the POST data, extract the input entity id
-        input_data_notification = request.get_json()
-        logger.info('input_data received from notification: %s\n', input_data_notification)
-        ENTITY_INPUT_DATA = input_data_notification['data'][0]['id']
-        logger.info('input_data received from notification: %s\n', ENTITY_INPUT_DATA)
+        # input_data_notification = request.get_json()
+        # logger.info('input_data received from notification: %s\n', input_data_notification)
+        # ENTITY_INPUT_DATA = input_data_notification['data'][0]['id']
+        # logger.info('input_data received from notification: %s\n', ENTITY_INPUT_DATA)
+
 
         # if aggregation is not required (self.ngsild_ml_model_temporal_req
         # is empty ['']) we "simply" GET the entity and retrieve the
         # value for each input data required
         input_data_list = []
+
+        # IT SHOULD NOT GO THERE in 'IF' !
+        # WE ASSUME TEMPORAL REQUESTS TO ALL ENTITIES/PROPERTIES
         if TEMPORAL_REQUEST == ['']:
             # We GET the entity, and retrieve all input values data from it
             r = requests.get(URL_ENTITIES+ENTITY_INPUT_DATA, headers=headers)
@@ -627,10 +645,33 @@ class BentoAPIServer:
             else:
                 input_data_list.append(r.json()[ATTRIBUTE_INPUT_DATA]['value'])
             input_data_list=[input_data_list]
-        # if aggregation is required
+        
+
+        # AGGREGATION WILL BE ALWAYS REQUIRED IN THIS SUEZ USE CASE #
+        #
+        # We need to aggregate different time series, i.e. different 
+        # (entities, properties). Each entity has one property, each with the
+        # same name: "measure"
         else:
+            logger.info('----- Entering AGGREGATION\n')
+            logger.info('ATTRIBUTE_INPUT_DATA: %s\n', ATTRIBUTE_INPUT_DATA)
             logger.info('TEMPORAL_REQUEST: %s\n', TEMPORAL_REQUEST)
-            for input_d, aggreq in zip(ATTRIBUTE_INPUT_DATA, TEMPORAL_REQUEST):
+            logger.info('TEMPORAL_REQUEST: %s\n', ENTITIES_IDS)
+
+            df_date = None
+            # The dictionnary that will be passed to MATLAB
+            df_dict = {}
+            # A mapping dictionnary to translate the input URL data into 
+            # name of dictionnary keys.
+            # WARNING: ENTITIES_IDS MUST BE CORRECTLY ORDERED !!
+            # With the following order:
+            # temps2h, rh2h, wind10m, rr10, Volume
+            mapping_dict = {}
+            for key, value in zip(ENTITIES_IDS, ['temps2h', 'rh2h', 'wind10m', 'rr10', 'Volume']):
+                mapping_dict[key] = value
+            
+            # Process the temporal request result to create a dataframe  
+            for input_d, aggreq, entity_id in zip(ATTRIBUTE_INPUT_DATA, TEMPORAL_REQUEST, ENTITIES_IDS):
                 if input_d.startswith('https://'):
                     input_d_urlencoded = quote_plus(input_d)
                 else:
@@ -639,8 +680,10 @@ class BentoAPIServer:
                 
                 aggreq=aggreq.split('&')
                 for item in aggreq:
+                    ## TimeAt not in SUEZ case. TO BE CHANGED TO time.
                     # special treatment for time, need to transform a period into a valid date
-                    if item.startswith('time='):
+                    if item.startswith('timeAt='):
+                        logger.info('--- Entering processing date: \n')
                         time = item.split('=')[1]
                         if time.startswith('-'):
                             past = True
@@ -664,70 +707,75 @@ class BentoAPIServer:
                         else:
                             target_dt = datetime.now(timezone.utc) + td
                         target_dt_str = target_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-                        query = query + '&' + 'time=' + target_dt_str
+                        logger.info('--- Exiting processing date: %s\n', target_dt_str)
+                        query = query + '&' + 'timeAt=' + target_dt_str
                     else:
                         query = query + '&' + item
 
                 logger.info('Aggregation query: %s\n', query)
                 # We perform the temporal aggregration request for this input data
-                r = requests.get(URL_ENTITIES_TEMPORAL+ENTITY_INPUT_DATA+query, headers=headers)
+                r = requests.get(URL_ENTITIES_TEMPORAL+entity_id+query, headers=headers)
                 logger.info('Aggregation query status code: %s\n', r.status_code)
-                logger.info('Aggregation query response: %s\n', r.json())
 
-                # The aggregation can return one or several values
-                # actually a list of one or several list, such as:
-                # [[0.2,"2022-03-08T00:00:00Z"]]. We only get the values
-                # (which will be a list of one or several values)
-                #
-                # Also need to catch payload with a datasetId where
-                # values is part of a list.
-                if isinstance(r.json()[input_d], list):
-                    values = r.json()[input_d][0]['values']
-                else:
-                    values = r.json()[input_d]['values']
-                if len(values) == 1:
-                    values = [values[0][0]]
-                else:
-                    values = [item[0] for item in values]
-                
-                input_data_list.append(values)
-            # We need to transpose the list to have the data in a
-            # proper sequence.
-            input_data_list = np.array(input_data_list).transpose().tolist()
+                # 1) Get datetime information. Only once, assuming all data
+                #    will have the same time range.
+                #    We reverse the information received so that it is sorted
+                #    by oldest to newest
+                values = r.json()['measure']['values']
+                values.reverse()
+                if df_date is None:
+                    values = r.json()['measure']['values']
+                    df_datetime = [item[1] for item in values]
+                    df_date = []
+                    for item in df_datetime:
+                        year = item[:4]
+                        month = item[5:7]
+                        day = item[8:10]
+                        df_date.append(day + '/' + month + '/' + year)
+                        df_dict['time_V'] = df_date
+                    logger.info('Size of datetime column: %s\n', len(df_date))
 
-        logger.info('input_data_list %s\n', input_data_list)
+                # 2) Get values for the measurements and add to the dictionnary
+                measure = [item[0] for item in values]
+                df_dict[mapping_dict[entity_id]] = measure
+                logger.info('Entity: %s\n', entity_id)
+                logger.info('Size of entity id column: %s\n', len(measure))
 
-        ####
-        ## NEED TO LOOK AT THE DIMENSION of input_data_list
-        ## Probably could be either 1 dim (non temporal) or 2 dim (temporal)
-        ## Should be taken care of by the ML model (know what it expect)
-        ####
+        logger.info('Bramafan: %s\n\n', df_dict['Volume'])
+        logger.info('temp2h: %s\n\n', df_dict['temps2h'])
+        logger.info('rh2h: %s\n\n', df_dict['rh2h'])
+        logger.info('wind10m: %s\n\n', df_dict['wind10m'])
+        logger.info('rr10: %s\n\n', df_dict['rr10'])
+        logger.info('datetime: %s\n\n', df_dict['time_V'])
+
+
+        ## CALLING MAT LAB CODE HERE ...
         
-        logger.info('Calling bentoml /predict ...')
+        logger.info('Calling MATLAB model through bentoml /predict ...')
         predict_api = self.bento_service.inference_apis[0]
-        predict_req = Request.from_values(data=str(input_data_list))
-        predict_res = predict_api.handle_request(predict_req)
-        predictions = predict_res.get_json()
+        predict_req = Request.from_values(data=str(df_dict))
+        # predict_res = predict_api.handle_request(predict_req)
+        # predictions = predict_res.get_json()
+
+        # Fake predictions for testing updating target Entity (Volume prediction)
+        predictions = {'time_V': df_dict['time_V'][:10], 'predictions': df_dict['Volume'][:10]}
+
         logger.info('raw (get_json()) predictions received from /predict: %s', predictions)
 
         # Create NGSI-LD request to update Entity/Property
-        timezone_GMT = pytz.timezone('GMT')
-        predictedAt = timezone_GMT.localize(datetime.now().replace(microsecond=0)).isoformat()
-        logger.info('predictedAt UTC: %s', predictedAt)
-
-        # Update the attribute(s) of the target entity with the prediction(s)
-        for property_, prediction in zip(ATTRIBUTE_OUTPUT_DATA, predictions):
+        for time, measure in zip(predictions['time_V'], predictions['predictions']):
+            # change dateformat !
+            dtime_ = time[6:]+'-'+time[3:5]+'-'+time[0:2]+'T00:00:00Z'
             json_ = {
-                'value': prediction,
-                'observedAt': predictedAt,
-                'computedBy': {
-                    'type': 'Relationship',
-                    'object': ML_MODEL_URN
+                "measure": {
+                    "value": measure,
+                    "observedAt": dtime_,
+                    "type": "Property",
+                    'unitCode': 'MTQ'
                 }
             }
-            logger.info('attempting to patch: %s\n',  property_)
-            URL_PATCH_PREDICTION = URL_ENTITIES + ENTITY_OUTPUT_DATA + '/attrs/' + property_
-            r = requests.patch(URL_PATCH_PREDICTION, json=json_, headers=headers)
+            logger.info('attempting to patch measure of observedAt: %s\n', dtime_)
+            r = requests.post(URL_ENTITIES+ENTITY_OUTPUT_DATA + '/attrs/', json=json_, headers=headers)
             logger.info('requests status_code for (PATCH) attribute with prediction: %s\n',  r.status_code)
 
         # Finally, respond to the initial received request (notification)
