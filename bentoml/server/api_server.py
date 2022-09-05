@@ -541,7 +541,7 @@ class BentoAPIServer:
         headers = {
             'Authorization': 'Bearer ' + access_token,
             'Content-Type': 'application/json',
-            'Link': '<' + AT_CONTEXT + '>; rel="http://www.w3.org/ns/json-ld#context"; type="application/ld+json"'
+            'Link': '<' + self.ngsild_at_context + '>; rel="http://www.w3.org/ns/json-ld#context"; type="application/ld+json"'
         }
 
         # Get the POST data
