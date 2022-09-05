@@ -534,7 +534,8 @@ class BentoAPIServer:
         access_token = self.ngsild_access_token
         headers = {
             'Authorization': 'Bearer ' + access_token,
-            'Content-Type': 'application/ld+json'
+            'Content-Type': 'application/json',
+            'Link': '<' + AT_CONTEXT + '>; rel="http://www.w3.org/ns/json-ld#context"; type="application/ld+json"'
         }
         MLMODEL_UUID = self.ngsild_ml_model_id
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
@@ -571,7 +572,6 @@ class BentoAPIServer:
         logger.info('predictedAt UTC: %s', predictedAt)
 
         json_ = {
-            '@context': AT_CONTEXT,
             'value': prediction,
             'observedAt': predictedAt,
             'computedBy': {
