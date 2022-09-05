@@ -532,16 +532,17 @@ class BentoAPIServer:
 
         # Some generic configuration
         access_token = self.ngsild_access_token
-        headers = {
-            'Authorization': 'Bearer ' + access_token,
-            'Content-Type': 'application/json',
-            'Link': '<' + AT_CONTEXT + '>; rel="http://www.w3.org/ns/json-ld#context"; type="application/ld+json"'
-        }
         MLMODEL_UUID = self.ngsild_ml_model_id
         URL_ENTITIES = self.ngsild_cb_url + '/ngsi-ld/v1/entities/'
         AT_CONTEXT = [ self.ngsild_at_context ]
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
         ATTRIBUTE_OUTPUT_DATA = self.ngsild_ml_model_output
+
+        headers = {
+            'Authorization': 'Bearer ' + access_token,
+            'Content-Type': 'application/json',
+            'Link': '<' + AT_CONTEXT + '>; rel="http://www.w3.org/ns/json-ld#context"; type="application/ld+json"'
+        }
 
         # Get the POST data
         input_data_notification = request.get_json()
