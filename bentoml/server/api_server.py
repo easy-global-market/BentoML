@@ -405,25 +405,49 @@ class BentoAPIServer:
         is created to be notified when this input data changes.
 
         The notification received looks like:
+        ### CONTENT NOTIFICATION CHANGED 07/09/2022
+        ### It now looks like:
 
         {
-            'id': 'urn:ngsi-ld:Notification:fadc5090-2425-42f8-b318-1966fa0e0011',
-            'type': 'Notification',
-            'subscriptionId': 'urn:ngsi-ld:Subscription:MLModel:flow:predict:71dba318-2989-4c76-a22c-52a53f04759b',
-            'notifiedAt': '2021-05-03T09:53:50.330686Z',
-            'data': [
+            "id": "urn:ngsi-ld:Notification:933978d4-deab-48d5-9d63-ee532602fe73",
+            "type": "Notification",
+            "subscriptionId": "urn:ngsi-ld:Subscription:MLModel:flow:3M:predict:71dba318-2989-4c76-a22c-52a53f04759b",
+            "notifiedAt": "2022-03-09T15:57:02.034465857Z",
+            "data": [
                 {
-                    'id': 'urn:ngsi-ld:MLProcessing:4bbb2b09-ad6c-4fb9-8f40-8d37e4cddd3a',
-                    'type': 'MLProcessing',
-                    'entities': [
-                        {
-                            "id": "urn:ngsi-ld:River:014f5730-72ab-4554-a106-afbe5d4d9d26",
-                            "type": "River"
-                        }
-                    ],
-                    '@context': [
-                        'https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-compound.jsonl'
-                    ]
+                "id": "urn:ngsi-ld:MLProcessing:-1441681408:1872658613:-1333872790",
+                "type": "MLProcessing",
+                "createdAt": "2022-09-07T08:15:47.649025331Z",
+                "refEntityWatchInput": {
+                    "type": "Relationship",
+                    "createdAt": "2022-09-07T08:15:48.014668051Z",
+                    "object": "urn:ngsi-ld:River:Tinee:1"
+                },
+                "refSubscription": {
+                    "type": "Relationship",
+                    "createdAt": "2022-09-07T08:15:48.161255014Z",
+                    "object": "urn:ngsi-ld:Subscription:-1441681408:1872658613:-1333872790"
+                },
+                "modifiedAt": "2022-09-07T08:15:47.659580729Z",
+                "refMLModel": {
+                    "type": "Relationship",
+                    "createdAt": "2022-09-07T08:15:48.127087071Z",
+                    "object": "urn:ngsi-ld:MLModel:flow:predict"
+                },
+                "subscriptionData": {
+                    "type": "Property",
+                    "createdAt": "2022-09-07T08:15:48.196014920Z",
+                    "value": {
+                    "entities": {
+                        "id": "urn:ngsi-ld:River:Tinee:1",
+                        "type": "River",
+                        "watchedAttributes": "flow"
+                    }
+                    }
+                },
+                "@context": [
+                    "https://raw.githubusercontent.com/easy-global-market/ngsild-api-data-models/master/mlaas/jsonld-contexts/mlaas-ngsild-compound.jsonld"
+                ]
                 }
             ]
         }
@@ -451,8 +475,8 @@ class BentoAPIServer:
         mlprocessing_entity = mlprocessing_notification['data'][0]
         logger.info("Got following MLProcessing entity: %s", mlprocessing_entity)
 
-        input_entity_id = mlprocessing_entity['entities'][0]['id']
-        input_entity_type = mlprocessing_entity['entities'][0]['type']
+        input_entity_id = mlprocessing_entity['subscriptionData']['value']['entities']['id']
+        input_entity_type = mlprocessing_entity['subscriptionData']['value']['entities']['type']
 
         ATTRIBUTE_INPUT_DATA = self.ngsild_ml_model_input
 
